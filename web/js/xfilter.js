@@ -185,8 +185,7 @@ xfilter.nanocube_queries = function() {
                         filter = '\'' + f + '\',pathagg(p(' + filters[f].target.join('),p(') + '))';
                         break;
                     case 'interval':
-                        let length = filters[f].target[1] - filters[f].target[0];
-                        filter = 'intseq(' + filters[f].target[0] + ',24,' + length + ')';
+                        filter = '\'' + f + '\',interval(' + filters[f].target[0] + ',' + filters[f].target[1] + ')';
                         break;
                 }
                 filter_parts.push('.b(' + filter + ')');
