@@ -63,10 +63,10 @@
                           k();
                       });
                   }
-                  var typesDim = nf.dimension('Primary_Type'),
+                  var typesDim = nf.dimension('type'),
                       typesGroup = typesDim.group().categorical(),
-                      timesDim = nf.dimension('Date'),
-                      timesGroup = timesDim.group().time();
+                      timesDim = nf.dimension('time'),
+                      timesGroup = timesDim.group().time(new Date(1386877600000), 24*60*60*1000, 10);
 
                   timesChart
                       .width(768)

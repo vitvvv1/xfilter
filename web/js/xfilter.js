@@ -22,7 +22,7 @@ function xfilter(server) {
     }
 
     function create_group(dimension) {
-        var _id = _group_id++, _anchor = {id: _id, dimension: dimension, values: null, splitter: 'a'};
+        var _id = _group_id++, _anchor = {id: _id, dimension: dimension, values: null};
         _groups[_id] = _anchor;
         var group = {
             categorical: function() {
@@ -158,7 +158,9 @@ function xfilter(server) {
 }
 
 xfilter.nanocube_queries = function() {
-    var _start_time, _resolution;
+    // var _start_time, _resolution;
+    var _start_time2, _resolution2;
+    var _dataset_name;
     function ms_mult(suffix) {
         var mult = 1;
         switch(suffix) {
@@ -172,70 +174,96 @@ xfilter.nanocube_queries = function() {
     }
     return {
         do_query: function(query_url, filters, group) {
-            var parts = ['count'];
+            var parts = ['q'];
+            var filter_parts = [];
             for(var f in filters) {
                 if(group && group.dimension === f)
                     continue;
                 var filter;
                 switch(filters[f].type) {
-                case 'set':
-                    filter = 'set(' + filters[f].target.join(',') + ')';
-                    break;
-                case 'interval':
-                    filter = 'interval(' + filters[f].target.join(',') + ')';
-                    break;
+                    case 'set':
+                        filter = '\'' + f + '\',pathagg(p(' + filters[f].target.join('),p(') + '))';
+                        break;
+                    case 'interval':
+                        let length = filters[f].target[1] - filters[f].target[0];
+                        filter = 'intseq(' + filters[f].target[0] + ',24,' + length + ')';
+                        break;
                 }
-                parts.push('.r("' + f + '",' + filter + ')');
+                filter_parts.push('.b(' + filter + ')');
             }
             if(group.state)
-                parts.push('.' + group.state.splitter + '("' + group.dimension + '",' + group.state.print() + ')');
+                parts.push('(' + _dataset_name + '.b(\'' + group.dimension + '\',' + group.state.print() + ')' + filter_parts.join('') + ')');
             return d3.json(query_url(parts.join('')));
         },
         unpack_result: function(result) {
-            return result.root.children.map(function(pv) {
-                return {key: pv.path[0], value: pv.val};
-            });
+            var unpacked_results = [];
+            for (let i = 0; i < result[0].numrows; i++) {
+                var key = result[0].index_columns[0].values[i];
+                var value =  result[0].measure_columns[0].values[i];
+                unpacked_results.push({key: key, value: value})
+            }
+            return unpacked_results;
+            // return result.root.children.map(function(pv) {
+            //     return {key: pv.path[0], value: pv.val};
+            // });
         },
         fetch_schema: function(query_url) {
-            return d3.json(query_url('schema')).then(function(schema) {
+            return d3.json(query_url('schema()')).then(function(schema) {
                 var fields = {}, xform = {};
-                schema.fields.forEach(function(f) {
+
+                _dataset_name = schema[0].name;
+
+                schema[0].index_dimensions.forEach(function(f) {
                     fields[f.name] = f;
-                    if(/^nc_dim_cat_/.test(f.type)) {
+                    if(/^categorical/.test(f.hint)) {
                         var vn = [];
-                        for(var vname in f.valnames)
-                            vn[f.valnames[vname]] = vname;
+                        for(var vid in f.aliases)
+                            vn[f.aliases[vid]] = vid;
                         xform[f.name] = {
                             to: function(v) {
-                                return f.valnames[v];
+                                return vn[v];
                             },
                             fro: function(v) {
-                                return vn[v] || 'foo';
+                                return f.aliases[v] || 'foo';
                             }
                         };
                     }
-                    else if(/^nc_dim_time_/.test(f.type)) {
+                    else if(/^temporal/.test(f.hint)) {
+                        var byTemporal = f.hint.split('|');
+                        var byResolution = byTemporal[1].split('_');
+                        var time = byResolution[0];
+                        var resolution = byResolution[1];
+
+                        _start_time2 = Date.parse(time);
+
+                        var match;
+                        if((match = /^([0-9]+)([a-z]+)$/.exec(resolution))) {
+                            var mult = ms_mult(match[2]);
+                            _resolution2 = +match[1] * mult;
+                        }
+
+
                         xform[f.name] = {
                             to: function(v) {
-                                return Math.round((v.getTime() - _start_time)/_resolution);
+                                return Math.round((v.getTime() - _start_time2)/_resolution2);
                             },
                             fro: function(v, state) {
-                                return new Date(state.start*_resolution + _start_time + v * state.binwid*_resolution);
+                                return new Date(state.start*_resolution2 + _start_time2 + v * state.binwid*_resolution2);
                             }
                         };
                     }
                 });
-                schema.metadata.forEach(function(m) {
-                    if(m.key === 'tbin') {
-                        var parts = m.value.split('_');
-                        _start_time = Date.parse(parts[0] + ' ' + parts[1]);
-                        var match;
-                        if((match = /^([0-9]+)([a-z]+)$/.exec(parts[2]))) {
-                            var mult = ms_mult(match[2]);
-                            _resolution = +match[1] * mult;
-                        }
-                    }
-                });
+                // schema.metadata.forEach(function(m) {
+                //     if(m.key === 'tbin') {
+                //         var parts = m.value.split('_');
+                //         _start_time = Date.parse(parts[0] + ' ' + parts[1]);
+                //         var match;
+                //         if((match = /^([0-9]+)([a-z]+)$/.exec(parts[2]))) {
+                //             var mult = ms_mult(match[2]);
+                //             _resolution = +match[1] * mult;
+                //         }
+                //     }
+                // });
                 return {fields, xform};
             });
         },
@@ -246,12 +274,10 @@ xfilter.nanocube_queries = function() {
                     return name + '(' + args.map(JSON.stringify).join(',') + ')';
                 };
             }
-            function dive_state(bins, depth) {
+            function dive_state(depth) {
                 return {
-                    bins: bins,
                     depth: depth,
-                    splitter: 'a',
-                    print: arg_printer('dive', bins, depth)
+                    print: arg_printer('dive', depth)
                 };
             }
             function time_state(start, binwid, len) {
@@ -259,32 +285,31 @@ xfilter.nanocube_queries = function() {
                     start: start,
                     binwid: binwid,
                     len: len,
-                    splitter: 'r',
-                    print: arg_printer('mt_interval_sequence', start, binwid, len)
+                    print: arg_printer('intseq', start, binwid, len)
                 };
             }
             return Object.assign({}, group, {
-                dive: function(bins, depth) {
-                    anchor.state = dive_state(bins, depth);
+                dive: function(depth) {
+                    anchor.state = dive_state(depth);
                     return this;
                 },
                 // native interface
-                mt_interval_sequence: function(start, binwid, len) { // ints
+                intseq: function(start, binwid, len) { // ints
                     anchor.state = time_state(start, binwid, len);
                     return this;
                 },
                 // somewhat nicer interface
                 time: function(start, binwid, len) { // Date, ms, number
-                    start = start ? start.getTime() : _start_time;
-                    binwid = binwid || _resolution;
+                    start = start ? start.getTime() : 2;
+                    binwid = binwid || _resolution2;
                     len = len || 10*365;
-                    var startb = (start - _start_time)/_resolution,
-                        widb = binwid/_resolution;
-                    return this.mt_interval_sequence(startb, widb, len);
+                    var startb = (start - _start_time2)/_resolution2,
+                        widb = binwid/_resolution2;
+                    return this.intseq(startb, widb, len);
                 },
                 categorical: function() {
                     group.categorical();
-                    return this.dive([], 1);
+                    return this.dive(1);
                 }
             });
         }
